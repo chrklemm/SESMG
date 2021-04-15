@@ -157,7 +157,8 @@ class Results:
             logging.info('   ' + 'Max. Capacity: '
                          + str(round(flow_max[[0][0]], 2)) + ' kW')
         # returns the parameters to the statistics method
-        if comp_type == 'demand' or comp_type == 'source' or comp_type == 'shortage':
+        if comp_type == 'demand' or comp_type == 'source' \
+                or comp_type == 'shortage':
             return flow_sum[[0][0]], df_component1
         elif comp_type == 'link' or comp_type == 'storage':
             return flow_sum, flow_max, component['sequences']
@@ -184,6 +185,9 @@ class Results:
         # defines bus_node for different components
         if comp_type == 'source':
             bus_node = self.esys.groups[component['output']]
+        elif comp_type == 'solar_heat':
+            label = component['label'] + '_bus'
+            bus_node = self.esys.groups[label]
         elif comp_type == 'storage':
             bus_node = None
         elif comp_type == 'link':
@@ -192,10 +196,17 @@ class Results:
             raise SystemError('Wrong type chosen!')
         # sets component investment
         component_investment = \
-            (self.results[component_node, bus_node]['scalars']['invest'])
+            (self.results[component_node, bus_node]
+             ['scalars']['invest'])
+        if comp_type == 'solar_heat':
+            # considers area conversion factor on investment for
+            # solar heat sources
+            component_investment = \
+                component_investment / \
+                component['Conversion Factor /(sqm/kW) (Solar Heat)']
         # returns logging info
         logging.info('   ' + 'Investment Capacity: '
-                     + str(component_investment) + ' kW')
+                     + str(round(component_investment, 2)) + ' kW')
         if comp_type == 'storage':
             # calculates the periodical costs
             periodical_costs = (component['periodical costs /(CU/(kWh a))'] *
@@ -220,7 +231,8 @@ class Results:
         ----------------------------------------------------------------
         sinks       |   Total Energy Demand
         sources     |   Total Energy Input, Max. Capacity,
-                        Variable Costs, Periodical Costs
+                        Variable Costs, Periodical Costs,
+                        Electricity Input (Solar Heat only),
         transformers|   Total Energy Output, Max. Capacity,
                         Variable Costs, Investment Capacity,
                         Periodical Costs
@@ -257,6 +269,8 @@ class Results:
         columns = ['ID', 'type', 'input 1/kWh', 'input 2/kWh', 'output 1/kWh',
                    'output 2/kWh', 'capacity/kW', 'variable costs/CU',
                    'periodical costs/CU', 'investment/kW', 'constraints/CU']
+        # sets checklist for fill in variables
+        checklist = ['X', 'x', '', '0', 'None', 'none', 'nan']
 
         df_list_of_components = pd.DataFrame(columns=columns)
         df_result_table = pd.DataFrame()
@@ -329,27 +343,84 @@ class Results:
         # sources-sheet of the input spreadsheet
         for i, comp in nd['sources'].iterrows():
             if comp['active']:
-                (flow_sum, df_source) = self.get_flow(comp['label'], 'source')
-                # adds the flowsum to the total_usage variable
-                total_usage = total_usage + flow_sum
+                if str(comp['input']) in checklist:
+                    (flow_sum, df_source) = self.get_flow(comp['label'], 'source')
+                    # adds the flowsum to the total_usage variable
+                    total_usage = total_usage + flow_sum
+                    # Adds the components time series to the
+                    # df_component_flows data frame for further usage
+                    df_result_table[comp['label']] = df_source
+                # creates and returns results if source is a solar thermal
+                # collector (flat plate or concentrated)
+                elif str(comp['input']) not in checklist:
+                    # reference to transformer and solar bus component
+                    transformer = comp['label'] + '_collector'
+                    col_bus = comp['label'] + '_bus'
+                    transformer_investment = 0
+                    variable_costs = 0
+                    periodical_costs = 0
+                    # sets in- and output variables for solar heat transformer
+                    # and logs results
+                    (flow_sum_tf, flow_max, dfcomponent) = \
+                        self.get_flow(transformer, 'link')
+                    for index, value in flow_sum_tf.items():
+                        if index == ((comp['input'], transformer), 'flow'):
+                            input = value
+                            df_input1 = dfcomponent[index]
+                        elif index == ((col_bus, transformer), 'flow'):
+                            input2 = value
+                            # flow_sum = input2
+                            df_input2 = dfcomponent[index]
+                        elif index == ((transformer, comp['output']), 'flow'):
+                            output1 = value
+                            flow_sum = output1
+                            df_output1 = dfcomponent[index]
+                    logging.info('   ' + 'Input from '
+                                 + comp['input'] + ': '
+                                 + str(round(input, 2)) + ' kWh')
+                    logging.info('   ' + 'Ambient Energy Input to '
+                                 + transformer + ': '
+                                 + str(round(input2, 2)) + ' kWh')
+                    logging.info('   ' + 'Energy Output to '
+                                 + comp['output'] + ': '
+                                 + str(round(output1, 2)) + ' kWh')
+                    total_usage = total_usage + output1
+                    # Adds the components time series for solar heat sources
+                    # to the df_component_flows data frame for further usage
+                    df_result_table[comp['label'] + '_el_input'] = df_input1
+                    df_result_table[comp['label'] + '_solar_input'] = df_input2
+                    df_result_table[comp['label'] + '_heat_output'] =\
+                        df_output1
                 # continues, if the model decided to take a investment
                 # decision for this source
                 constraint_costs = \
                     flow_sum * comp['variable constraint costs /(CU/kWh)']
 
                 if comp['max. investment capacity /(kW)'] > 0:
-                    # gets the investment for the given source
-                    (component_investment, periodical_costs) = \
-                        self.get_investment(comp, 'source')
-                    # adds the investment to the investments_to_be_made
-                    # list
-                    investments_to_be_made[comp['label']] = \
-                        (str(round(component_investment, 2)) + ' kW')
+                    # sources except solar heat
+                    if str(comp['input']) in checklist:
+                        # gets the investment for the given source
+                        (component_investment, periodical_costs) = \
+                            self.get_investment(comp, 'source')
+                        # adds the investment to the investments_to_be_made
+                        # list
+                        investments_to_be_made[comp['label']] = \
+                            (str(round(component_investment, 2)) + ' kW')
+                    # solar heat sources
+                    elif str(comp['input']) not in checklist:
+                        # gets the investment for the given source
+                        (component_investment, periodical_costs) = \
+                            self.get_investment(comp, 'solar_heat')
+                        # adds the investment to the investments_to_be_made
+                        # list
+                        investments_to_be_made[comp['label']] = \
+                            (str(round(component_investment, 2)) + ' kW')
+
                     if component_investment > 0:
                         total_periodical_costs = (total_periodical_costs
                                                   + periodical_costs)
                         investments_to_be_made[comp['label']] = \
-                            (str(component_investment)
+                            (str(round(component_investment, 2))
                              + ' kW; ' + str(round(periodical_costs, 2))
                              + ' cost units (p.a.)')
                         constraint_costs += \
@@ -365,20 +436,31 @@ class Results:
                 total_costs = total_costs + variable_costs
                 logging.info('   ' + 'Variable costs: '
                              + str(round(variable_costs, 2)) + ' cost units')
-                # Adds the components time series to the
-                # df_component_flows data frame for further usage
-                df_result_table[comp['label']] = df_source
-                # adds the source to the list of components
-                df_list_of_components = \
-                    df_list_of_components.append(
-                        pd.DataFrame([[comp['label'], 'source', '---',
-                                       '---', round(df_source.sum(), 2),
-                                       '---', round(df_source.max(), 2),
-                                       round(variable_costs, 2),
-                                       round(periodical_costs, 2),
-                                       round(component_investment, 2),
-                                       round(constraint_costs, 2)]],
-                                     columns=columns))
+                # adds the source to the list of components (except solar heat)
+                if str(comp['input']) in checklist:
+                    df_list_of_components = \
+                        df_list_of_components.append(
+                            pd.DataFrame([[comp['label'], 'source', '---',
+                                           '---', round(df_source.sum(), 2),
+                                           '---', round(df_source.max(), 2),
+                                           round(variable_costs, 2),
+                                           round(periodical_costs, 2),
+                                           round(component_investment, 2),
+                                           round(constraint_costs, 2)]],
+                                         columns=columns))
+                # adds solar heat sources to the list of components
+                if str(comp['input']) not in checklist:
+                    df_list_of_components = \
+                        df_list_of_components.append(
+                            pd.DataFrame([[transformer, 'source',
+                                           round(input, 2), round(input2, 2),
+                                           round(output1, 2), '---',
+                                           round(df_input2.max(), 2),
+                                           round(variable_costs, 2),
+                                           round(periodical_costs, 2),
+                                           round(component_investment, 2),
+                                           round(constraint_costs, 2)]],
+                                         columns=columns))
                 logging.info(log_end)
         for i, comp in nd['buses'].iterrows():
             if comp['active']:
@@ -425,6 +507,10 @@ class Results:
                                     comp['label']), 'flow'):
                         input2 = value
                         df_input2 = dfcomponent[index]
+                    elif index == ((comp['label'] + '_high_temp_bus',
+                                    comp['label']), 'flow'):
+                        input2 = value
+                        df_input2 = dfcomponent[index]
                     elif index == ((comp['label'], comp['output']), 'flow'):
                         output1 = value
                         df_output1 = dfcomponent[index]
@@ -455,18 +541,25 @@ class Results:
                     logging.info('   ' + 'WARNING: ExtractionTurbineCHP are'
                                  ' currently not a part of this model '
                                  'generator, but will be added later.')
-
-                elif comp['transformer type'] == 'HeatPump':
+                # sets logging info for compression or absorption heat
+                # transformers
+                elif str(comp['mode']) not in checklist:
                     logging.info('   ' + 'Electricity Energy Input to '
                                  + comp['label'] + ': '
                                  + str(round(input, 2)) + ' kWh')
-                    logging.info('   ' + 'Ambient Energy Input to '
-                                 + comp['label'] + ': '
-                                 + str(round(input2, 2)) + ' kWh')
+                    if comp['transformer type'] == \
+                            'absorption_heat_transformer':
+                        logging.info('   ' + 'Heat Input to '
+                                     + comp['label'] + ': '
+                                     + str(round(input2, 2)) + ' kWh')
+                    if comp['transformer type'] == \
+                            'compression_heat_transformer':
+                        logging.info('   ' + 'Ambient Energy Input to '
+                                     + comp['label'] + ': '
+                                     + str(round(input2, 2)) + ' kWh')
                     logging.info('   ' + 'Total Energy Output to '
                                  + comp['output'] + ': '
                                  + str(round(output1, 2)) + ' kWh')
-
 
                 elif comp['transformer type'] == 'OffsetTransformer':
                     logging.info('   ' + 'WARNING: OffsetTransformer are '
@@ -539,8 +632,8 @@ class Results:
                                                round(df_input1.max(), 2),
                                                round(variable_costs, 2),
                                                round(periodical_costs, 2),
-                                               round(transformer_investment, 2)
-                                               ,round(constraint_costs, 2)]],
+                                               round(transformer_investment, 2),
+                                               round(constraint_costs, 2)]],
                                                columns=columns))
                     else:
                         # adds Generic transformer with two given
@@ -556,13 +649,29 @@ class Results:
                                                round(df_input1.max(), 2),
                                                round(variable_costs, 2),
                                                round(periodical_costs, 2),
-                                               round(transformer_investment, 2)
-                                               ,round(constraint_costs, 2)]],
+                                               round(transformer_investment, 2),
+                                               round(constraint_costs, 2)]],
                                                columns=columns))
-                elif comp['transformer type'] == 'HeatPump':
-                    df_result_table[comp['label'] + '_input2'] = df_input2
-                    # adds heatpump transformer to the list of
-                    # components
+                # adds compression or absorption heat transformer to the
+                # list of results
+                elif str(comp['mode']) not in checklist:
+                    df_result_table[comp['label'] + '_el_input'] = df_input1
+                    if comp['transformer type'] ==\
+                            'absorption_heat_transformer':
+                        df_result_table[comp['label'] + '_heat_input'] =\
+                            df_input2
+                    if comp['transformer type'] ==\
+                            'compression_heat_transformer':
+                        df_result_table[comp['label'] + '_ambient_input'] =\
+                            df_input2
+                    if comp['mode'] == 'chiller':
+                        df_result_table[comp['label'] + '_cooling_output'] =\
+                            df_output1
+                    if comp['mode'] == 'heat_pump':
+                        df_result_table[comp['label'] + '_heat_output'] =\
+                            df_output1
+                    # adds compression or absorption heat transformer to the
+                    # list of components
                     df_list_of_components = \
                         df_list_of_components.append(
                             pd.DataFrame([[comp['label'], 'transformer',
@@ -571,7 +680,7 @@ class Results:
                                            round(df_output1.max(), 2),
                                            round(variable_costs, 2),
                                            round(periodical_costs, 2),
-                                           round(transformer_investment, 2) ,
+                                           round(transformer_investment, 2),
                                            round(constraint_costs, 2)]],
                                            columns=columns))
 
@@ -590,8 +699,8 @@ class Results:
                                            round(df_output1.max(), 2),
                                            round(variable_costs, 2),
                                            round(periodical_costs, 2),
-                                           round(transformer_investment, 2)
-                                           ,round(constraint_costs, 2)]],
+                                           round(transformer_investment, 2),
+                                           round(constraint_costs, 2)]],
                                            columns=columns))
                 logging.info(log_end)
         # logs the next type of components

@@ -77,6 +77,8 @@ def create_graph(filepath, nodes_data, legend=False):
               'links': ['box']}
     bus = {'buses': ['label'], 'sources': ['output'], 'demand': ['input'],
            'transformers': ['input'], 'storages': ['bus'], 'links': ['bus_1']}
+    # sets checklist for fill in variables
+    checklist = ['X', 'x', '', '0', 'None', 'none', 'nan']
     for i in components:
         for j, b in nodes_data[i].iterrows():
             if b['active']:
@@ -92,6 +94,23 @@ def create_graph(filepath, nodes_data, legend=False):
                     dot.node(label, shape=shapes[i][0], fontsize="10",
                              fixedsize='shape', width='1.1', height='0.6',
                              style='dashed' if i == 'storages' else '')
+                    if i == 'sources':
+                        # Creates graph elements for solar heat
+                        if str(b['input']) not in checklist:
+                            # creates additional transformer
+                            transformer = b['label'] + '_collector'
+                            transformer = linebreaks(transformer)
+                            dot.node(transformer, shape='box', fontsize="10",
+                                     fixedsize='shape', width='1.1', height='0.6')
+                            # creates additional bus
+                            c_bus = b['label'] + '_bus'
+                            c_bus = linebreaks(c_bus)
+                            dot.node(c_bus, shape='ellipse', fontsize="10")
+                            # Adds edge for transformer, source and bus to the graph
+                            dot.edge(b['input'], transformer)
+                            dot.edge(c_bus, transformer)
+                            dot.edge(transformer, b['output'])
+                            dot.edge(label, c_bus)
                 else:
                     if b['shortage']:
                         dot.node(label, shape='trapezium', fontsize="10",
@@ -109,8 +128,8 @@ def create_graph(filepath, nodes_data, legend=False):
                         or (i == 'buses' and b['excess']
                             and not b['shortage']):
                     dot.edge(b[bus[i][0]], label)
-                if i == 'sources' or i == 'storages' \
-                        or (i == 'buses' and b['shortage']):
+                if (i == 'sources' and str(b['input']) in checklist) \
+                        or i == 'storages' or (i == 'buses' and b['shortage']):
                     dot.edge(label, b[bus[i][0]])
                 if i == 'links':
                     dot.edge(label, b['bus_2'])
@@ -124,22 +143,28 @@ def create_graph(filepath, nodes_data, legend=False):
                     if b['output2'] != "None":
                         dot.node(b['output2'], shape='ellipse', fontsize="10")
                         dot.edge(label, b['output2'])
-                    if b['transformer type'] == "HeatPump":
-                        # adds "_low_temp_source" to the label
-                        low_temp_source = label + '_low_temp_source'
+                    if str(b['mode']) not in checklist:
+                        # consideration of mode of operation
+                        if b['mode'] == 'heat_pump':
+                            temp = '_low_temp'
+                        elif b['mode'] == 'chiller':
+                            temp = '_high_temp'
+                        # creates label for source and bus depending on mode
+                        cmpr_abs_source = label + temp + '_source'
+                        cmpr_abs_bus = label + temp + '_bus'
                         # Linebreaks, so that the labels fit the boxes
-                        low_temp_source = linebreaks(low_temp_source)
+                        cmpr_abs_source = linebreaks(cmpr_abs_source)
+                        cmpr_abs_bus = linebreaks(cmpr_abs_bus)
                         # Adds a second input and a heat source (node and edge)
-                        # for heat pumps
-                        dot.node(label + '_low_temp_bus',
+                        # for compressionand absorption heat transformers
+                        dot.node(cmpr_abs_bus,
                                  shape='ellipse',
                                  fontsize="10")
-                        dot.edge(label + '_low_temp_bus', label)
-                        dot.node(low_temp_source, shape='trapezium',
+                        dot.edge(cmpr_abs_bus, label)
+                        dot.node(cmpr_abs_source, shape='trapezium',
                                  fontsize="10",
                                  fixedsize='shape', width='1.1', height='0.6')
-                        dot.edge(low_temp_source,
-                                 label + '_low_temp_bus')
+                        dot.edge(cmpr_abs_source, cmpr_abs_bus)
                 elif i == 'buses':
                     if b['excess'] and b['shortage']:
                         label = b['label'] + '_excess'

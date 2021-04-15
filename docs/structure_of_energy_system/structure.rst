@@ -116,13 +116,80 @@ listed in the following table.
 
 **Wind Turbines**
 
-For the modelilng of wind turbines, the weather data set must 
+For the modeling of wind turbines, the weather data set must
 include wind speeds. The wind speeds must be available for a 
 measurement height of 10 m in the unit m/s.
 
 The system data of the wind turbine to be modelled are obtained 
 from the `"oedb" <https://github.com/wind-python/windpowerlib/tree/dev/windpowerlib/oedb>`_ 
 database.
+
+**Solar thermal collectors**
+
+There are two collector types that can be modeled with this function.
+
+- flat plate collectors
+- concentrated solar power (parabolic through collector)
+
+The irradiance on the flat plate collector is very similar to the 
+photovoltaic source, although the reflected irradiance and the 
+albedo are not a part of the calculation for flat plate collectors. 
+For visualization you can take a look at the graph above. 
+
+The heat output of a parabolic through collector is based on the direct
+horizontal irradiance.
+
+The solar thermal collector function automatically creates a heat
+source, a collector bus object and a transformer object. The output 
+of the source is the actual heat, the collector would produce due to
+its technical parameters. The transformer object embodies the systems 
+periphery (pipes, pumps). Thermal losses and the electricity demand
+of this periphery can be considered by the transformer.
+
+.. figure:: ../images/solar_thermal_collector_structure.png
+   :width: 50%
+   :alt: solar_thermal_system
+   :align: center
+
+   Graph of a solar thermal collector system.
+
+The irradiance on the collector, its efficiency and the heat output is
+calculated by using `"oemof.thermal" <https://github.com/oemof/oemof-thermal>`_.
+Therefore specific values have to be given. Eta 0 is the optical
+efficiency of the collector, A1 is the linear heat loss coefficient
+and A2 is the quadratic heat loss coefficient. Values for Eta 0, A1
+and A2 are collector specific values and can be found in data sheets.
+These values are measured and calculated according to DIN EN ISO
+9806. The parameters C1 and C2 for concentrated solar power are as
+well collector specific values. An exemplary  set of values is give
+in the documentation on how to use the scenario file.
+
+The solar irradiance is given in W/sqm. Therefore the collector's heat
+output is given in this unit as well. The investment object has to
+be power (kW). So the energy output (kW/sqm) has to be multiplied
+with a conversion factor. The conversion factor (sqm/kW) is calculated
+by dividing the gross aperture area of a collector model by a measured
+power output per module, e.g at 1000 W/sqm (DIN EN ISO 9806).
+
+Some data sheets doesn't contain all the necessary data. So another
+useful tool is the `"Keymark Certificate Database" <https://keymark.eu/en/certificates/certificates-data-base>`_.
+The Keymark Certificate of a flat plate collector contains measured
+collector specific test data (a1, a2, eta 0, different power outputs).
+
+Example: `"Keymark Certificate 011-7S2432 F" <https://www.dincertco.de/logos/011-7S2432%20F.pdf>`_.
+If this collector is part of the energy model, the conversion factor
+is calculated by dividing the gross aperture area (2,53 sqm) by the
+power output. Considering an average inside collector temperature
+of 40 °C and an outside average temperature of 10°C result in a
+temperature difference of 30 K. So, in this case the heat power
+output is 1,504 kW and the conversion factor roundabout 1,68 (sqm/kW).
+
+.. figure:: ../images/example_conversion_factor_flat_plate.png
+   :width: 50%
+   :alt: solar_thermal_conversion_factor_example
+   :align: center
+
+   Example for calculation of conversion factor.
 
 Sinks
 =================================================
@@ -261,26 +328,59 @@ These may have one or more different outputs, e.g., heat and electricity. For th
 the nominal performance of a generic transformer with several outputs,
 the respective output ratios, and an efficiency for each output need to be known.
 
-**Heat Pumps**
+**Compression Heat Transformers**
 
-For the modelilng of heat pumps, different heat sources are considered so the 
+For the modeling of compression heat pumps and chillers, different heat sources are considered so the
 weather data set must include different temperatures. The efficiency of 
-the heat pump cycle process can be described by the Coefficient of Performance (COP).
-The heat pump automatically creates a heat source and a low temperature bus (see red bubble).
-So only a transformer and a electricity bus needs to be created.
-An example is shown in the following figure.
+the heat pump or chiller cycle process can be described by the coefficient of Performance (COP).
+The compression heat transformer function automatically creates a heat source and a low or high 
+temperature bus, depending on the mode of operation (see red bubble). So only a transformer
+and a electricity bus needs to be created. An example is shown in the following figure.
 
-.. figure:: ../images/heatpump_graph.png
-   :width: 50 %
-   :alt: HeatPump-Example
+.. figure:: ../images/graph_chiller_heat_pump.png
+   :width: 100 %
+   :alt: graph heatpump and chiller
    :align: center
-
-   Graph of a heat pump system.
+   
+   Graph of a compression heat pump (left) and compression chiller (right).
 
 At the moment it is possible to use ground water, soil (vertical heat exchanger), surface water 
 and ambient air as a heat source. 
 
-The heat pumps are implemnted by using  `"oemof.thermal" <https://github.com/oemof/oemof-thermal>`_ .
+The compression heat transformers are implemented by using  `"oemof.thermal" <https://github.com/oemof/oemof-thermal>`_ .
+
+**Absorption Heat Transformers**
+
+At this point this function implies the modeling of an absorption chiller. An absorption chiller
+object contains a high temperature heat source, the necessary connection bus and a transformer
+object, that describes the absorption chiller. The heat source can be waste heat for example.
+The efficiency of the absorption chiller is described by the coefficient of Performance (COP).
+
+The necessary parameters for the characteristic equation method are found in the
+"characteristic_parameters.csv"in the folder "technical_parameters". According to the oemof.thermal
+documentation the parameters for the absorption chillers ‘Rotartica’, ‘Safarik’, ‘Broad_01’ and
+‘Broad_02’ are published by `"Puig-Arnavat et al" <https://www.sciencedirect.com/science/article/pii/S0140700709001947?casa_token=WPjcotFne6UAAAAA:ytQ9vrYSHR98goYWIFc-vElyZo98FCXk-DgvdE4mxxBvR2QLNT3y2-p2QQ08t5Cd3Txqmfw1NTs>`_.
+The parameters for the machine named "Kuehn" is published by `"Kühn and Ziegler" <https://heatpumpingtechnologies.org/publications/operational-results-of-a-10-kw-absorption-chillerin-heat-pump-mode/>`_.
+The labels refer to the following machine types:
+
++-----------+--------------------------------------------------------------------+
+|   label   | Description                                                        |
++===========+====================================================================+
+| Rotartica | Single-effect hot-water-fired H2O/LiBr 4.5 kW absorption chiller   |
++-----------+--------------------------------------------------------------------+
+| Safarik   | Single-effect hot-water-fired H2O/LiBr 15 kW absorption chiller    |
++-----------+--------------------------------------------------------------------+
+| Broad_01  | Single-effect hot-water-fired H2O/LiBr 768 kW absorption chiller   |
++-----------+--------------------------------------------------------------------+
+| Broad_02  | Double-effect hot-water-fired H2O/LiBr 1163 kW absorption chiller  |
++-----------+--------------------------------------------------------------------+
+| Kuehn     | Single-effect hot-water-fired H2O/LiBr 10 kW absorption chiller    |
++-----------+--------------------------------------------------------------------+
+
+If data is availible, new
+
+The absorption heat transformers are implemented by using  `"oemof.thermal" <https://github.com/oemof/oemof-thermal>`_ .
+
 
 
 Links
@@ -305,11 +405,18 @@ Storages
 =================================================
 Storages are connected to a bus and can store energy from this bus and return it to a later point in time.
 
+Stratified thermal storages use the thermal transmittance of the wall of the stratified thermal storage
+(including thermal insulation) for calculating the losses. Specific values can be found in data sheets.
+
 Investment
 =================================================
-The investment costs help to compare the costs of building new components to the costs of further using existing components instead. The annual savings from building new capacities 
-should compensate the investment costs. The investment method can be applied to any new component to be built. In addition to the usual component parameters, the 
-maximum installable capacity needs to be known. Further, the periodic costs need to be assigned to the investment costs. The periodic costs refer to the defined 
-time horizon. If the time horizon is one year, the periodical costs correspond to the annualized capital costs of an investment.
-
-**Non-Convex-Investments:** While a linear programming approach is used for normal investment decisions, a mixed integer variable is defined for non-convex investment decisions. The model can thus decide, for example, whether a component should be implemented FULL or NOT. Mixed-integer variables increase the computational effort significantly and should be used with caution.
+The investment costs help to compare the costs of building new components to the costs of further using existing
+components instead. The annual savings from building new capacities should compensate the investment costs.
+The investment method can be applied to any new component to be built. In addition to the usual component parameters,
+the maximum installable capacity needs to be known. Further, the periodic costs need to be assigned to the investment
+costs. The periodic costs refer to the defined time horizon. If the time horizon is one year, the periodical costs
+correspond to the annualized capital costs of an investment.
+**Non-Convex-Investments:** While a linear programming approach is used for normal investment decisions, a mixed
+integer variable is defined for non-convex investment decisions. The model can thus decide, for example, whether
+a component should be implemented FULL or NOT. Mixed-integer variables increase the computational effort
+significantly and should be used with caution.

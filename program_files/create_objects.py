@@ -110,9 +110,11 @@ class Sources:
     - 'timeseries' : a source with predefined time series
     - 'photovoltaic' : a photovoltaic component
     - 'wind power' : a wind power component
+    - 'solar_thermal_heat' : a solar thermal heat component. Can be
+    a flat plate or a parabolic through collector.
     """
     
-    def create_source(self, so, timeseries_args):
+    def create_source(self, so, timeseries_args, output=None):
         """Creates an oemof source with fixed or unfixed timeseries
         
         ----
@@ -135,29 +137,48 @@ class Sources:
             timeseries_args: dict
                 --  dictionary rather containing the 'fix-attribute' or
                 the 'min-' and 'max-attribute' of a source
-        
+
+            output: obj: class 'oemof.solph.network.Bus'
+                -- bus component which is output bus of the source
+
         ---
         Contributors:
         - Christian Klemm - christian.klemm@fh-muenster.de
         
         """
-    
+        # output default
+        if output is None:
+            output = self.busd[so['output']]
+        # sets checklist for fill in variables
+        checklist = ['X', 'x', '', '0', 'None', 'none', 'nan']
+        # set variables minimum, maximum and existing
+        if str(so['input']) in checklist:
+            minimum = so['min. investment capacity /(kW)']
+            maximum = so['max. investment capacity /(kW)']
+            existing = so['existing capacity /(kW)']
+        # set variables minimum, maximum and existing for solar thermal heat
+        # sources
+        else:
+            minimum = so['min. investment capacity /(kW)'] * \
+                so['Conversion Factor /(sqm/kW) (Solar Heat)']
+            maximum = so['max. investment capacity /(kW)'] * \
+                so['Conversion Factor /(sqm/kW) (Solar Heat)']
+            existing = so['existing capacity /(kW)'] * \
+                so['Conversion Factor /(sqm/kW) (Solar Heat)']
         # Creates a oemof source and appends it to the nodes_sources
         # (variable of the create_sources-class) list
         self.nodes_sources.append(
                 solph.Source(
                         label=so['label'],
-                        outputs={self.busd[so['output']]: solph.Flow(
+                        outputs={output: solph.Flow(
                                 investment=solph.Investment(
                                         ep_costs=so[
                                             'periodical costs /(CU/(kW a))'],
                                         periodical_constraint_costs=so[
                                             'periodical constraint costs /(CU/(kW a))'],
-                                        minimum=so[
-                                            'min. investment capacity /(kW)'],
-                                        maximum=so[
-                                            'max. investment capacity /(kW)'],
-                                        existing=so['existing capacity /(kW)'],
+                                        minimum=minimum,
+                                        maximum=maximum,
+                                        existing=existing,
                                         nonconvex=True if
                                         so['Non-Convex Investment'] == 1
                                         else False,
@@ -376,47 +397,226 @@ class Sources:
         
         # returns logging info
         logging.info('   ' + 'Source created: ' + so['label'])
-    
+
+    def solar_heat_source(self, so, data):
+        """
+            Creates a solar thermal collector source object.
+
+            Calculates the yield of a solar thermal flat plate collector
+            or a concentrated solar power collector as time series by
+            using oemof.thermal and the create_source method.
+
+            The following key-value-pairs have to be included in the
+            keyword arguments:
+
+            :param so: has to contain the following keyword arguments:
+
+                - 'label'
+                - 'active'
+                - 'fixed'
+                - 'output'
+                - 'input'
+                - 'technology':
+                    - 'solar_thermal_flat_plate' or
+                    - 'concentrated_solar_power'
+                - 'variable costs /(CU/kWh)'
+                - 'variable constraint costs /(CU/kWh)'
+                - 'existing capacity /(kW)'
+                - 'min. investment capacity /(kW)'
+                - 'max. investment capacity /(kW)'
+                - 'periodical costs /(CU/(kW a))'
+                - 'periodical constraint costs /(CU/(kW a))'
+                - 'Non-Convex Investment'
+                - 'Fix Investment Cost / (CU/a)'
+                - 'Latitude (Solar Heat)'
+                - 'Longitude (Solar Heat)'
+                - 'Surface Tilt (Solar Heat)'
+                - 'Azimuth (Solar Heat)'
+                - 'Cleanliness (Solar Heat)'
+                - 'ETA 0 (Solar Heat)'
+                - 'A1 (Solar Heat)'
+                - 'A2 (Solar Heat)'
+                - 'C1 (Solar Heat)'
+                - 'C2 (Solar Heat)'
+                - 'Temperature Inlet /deg C (Solar Heat)'
+                - 'Temperature Difference /deg C (Solar Heat)'
+                - 'Conversion Factor /(sqm/kW) (Solar Heat)'
+                - 'Peripheral Losses (Solar Heat)'
+                - 'Electric Consumption (Solar Heat)'
+
+            :type so: dict
+
+            :param data: weather data
+            :type data: dict
+
+            Yannick Wittor - yw090223@fh-muenster.de, 27.11.2020
+        """
+
+        # import oemof.thermal in order to calculate collector heat output
+        from oemof.thermal.solar_thermal_collector import flat_plate_precalc
+        from oemof.thermal.concentrating_solar_power import csp_precalc
+        import numpy
+
+        # creates an oemof-bus object for solar thermal collector
+        col_bus = solph.Bus(label=so['label'] + '_bus')
+        # adds the bus object to the list of components "nodes"
+        self.nodes_sources.append(col_bus)
+        self.busd[so['label'] + '_bus'] = col_bus
+        output = col_bus
+
+        # calculates global horizontal irradiance from diffuse (dhi)
+        # and direct irradiance (dirhi) and adds it to the weather data frame
+        data['ghi'] = (data.dirhi + data.dhi)
+
+        # precalculations for flat plate collectors, calculates total
+        # irradiance on collector, efficiency and heat output
+        if so['technology'] == 'solar_thermal_flat_plate':
+            precalc_results = flat_plate_precalc(
+                lat=so['Latitude (Solar Heat)'],
+                long=so['Longitude (Solar Heat)'],
+                collector_tilt=so['Surface Tilt (Solar Heat)'],
+                collector_azimuth=so['Azimuth (Solar Heat)'],
+                eta_0=so['ETA 0 (Solar Heat)'],
+                a_1=so['A1 (Solar Heat)'],
+                a_2=so['A2 (Solar Heat)'],
+                temp_collector_inlet=
+                so['Temperature Inlet /deg C (Solar Heat)'],
+                delta_temp_n=
+                so['Temperature Difference /deg C (Solar Heat)'],
+                irradiance_global=(data['ghi']),
+                irradiance_diffuse=(data['dhi']),
+                temp_amb=data['temperature'])
+            # set variables collectors_heat and irradiance and conversion
+            # from W/sqm to kW/sqm
+            collectors_heat = precalc_results.collectors_heat/1000
+            irradiance = precalc_results.col_ira/1000
+
+        # set parameters for precalculations for concentrating solar power
+        elif so['technology'] == 'concentrated_solar_power':
+            temp_collector_outlet = \
+                so['Temperature Inlet /deg C (Solar Heat)'] + \
+                so['Temperature Difference /deg C (Solar Heat)']
+            latitude = so['Latitude (Solar Heat)']
+            longitude = so['Longitude (Solar Heat)']
+            collector_tilt = so['Surface Tilt (Solar Heat)']
+            collector_azimuth = so['Azimuth (Solar Heat)']
+            cleanliness = so['Cleanliness (Solar Heat)']
+            eta_0 = so['ETA 0 (Solar Heat)']
+            c_1 = so['C1 (Solar Heat)']
+            c_2 = so['C2 (Solar Heat)']
+            temp_collector_inlet = \
+                so['Temperature Inlet /deg C (Solar Heat)']
+            temp_collector_outlet = temp_collector_outlet
+            a_1 = so['A1 (Solar Heat)']
+            a_2 = so['A2 (Solar Heat)']
+            e_dir_hor = data['dirhi']
+
+            # precalculation with parameter set, ambient temperature and
+            # direct horizontal irradiance. Calculates total irradiance on
+            # collector, efficiency and heat output
+            precalc_results = csp_precalc(latitude, longitude,
+                                          collector_tilt, collector_azimuth,
+                                          cleanliness, eta_0, c_1, c_2,
+                                          temp_collector_inlet,
+                                          temp_collector_outlet,
+                                          data['temperature'], a_1, a_2,
+                                          E_dir_hor=e_dir_hor)
+            # set variables collectors_heat and irradiance and conversion
+            # from W/sqm to kW/sqm
+            collectors_heat = precalc_results.collector_heat/1000
+            irradiance = precalc_results.collector_irradiance/1000
+
+        # set collector heat as timeseries as argument for source
+        if so['fixed'] == 1:
+            # sets the attribute for a fixed solar heat source
+            args = {'fix': collectors_heat}
+        elif so['fixed'] == 0:
+            # sets the attributes for an unfixed solar heat source
+            args = {'min': 0, 'max': collectors_heat}
+        else:
+            raise SystemError(so['label'] + " Error in fixed attribute")
+
+        # starts the create_source method with the parameters set before
+        self.create_source(so, args, output)
+
+        self.nodes_sources.append(solph.Transformer(
+            label=so['label'] + '_collector',
+            inputs={self.busd[so['label'] + '_bus']:
+                    solph.Flow(variable_costs=0),
+                    self.busd[so['input']]: solph.Flow(variable_costs=0)},
+            outputs={self.busd[so['output']]: solph.Flow(variable_costs=0)},
+            conversion_factors={
+                self.busd[so['label'] + '_bus']: 1,
+                self.busd[so['input']]:
+                    so['Electric Consumption (Solar Heat)'] *
+                    (1 - so['Peripheral Losses (Solar Heat)']),
+                self.busd[so['output']]:
+                    1 - so['Peripheral Losses (Solar Heat)']
+            }))
+
+        # returns logging info
+        logging.info('   ' + 'Source created: ' + so['label']
+                     + ", Max Heat power output per year and m²: {:2.2f}".
+                     format(numpy.sum(collectors_heat)) + ' kWh/(m²a)'
+                     + ", Irradiance on collector per year and m²: "
+                       "{:2.2f}".format(numpy.sum(irradiance)) + ' kWh/(m²a)')
+
     def __init__(self, nodes_data, nodes, busd, filepath):
         """
         Inits the source class
         ---
         Keyword arguments:
-        
+
         nodes_data: obj:'dict'
         --  dictionary containing parameters of sources to be
         created.The following data have to be provided:
-            - 'label'
-            - 'active'
-            - 'fixed'
-            - 'output'
-            - 'technology'
-            - 'variable costs / (CU / kWh)'
-            - 'existing capacity / (kW)'
-            - 'min.investment capacity / (kW)'
-            - 'max.investment capacity / (kW)'
-            - 'periodical costs / (CU / (kW a))'
-            - 'Non-Convex Investment'
-            - 'Fix Investment Cost / (CU/a)'
-            - 'Turbine Model (Windpower ONLY)'
-            - 'Hub Height (Windpower ONLY)'
-            - 'technology database(PV ONLY)'
-            - 'inverter database(PV ONLY)'
-            - 'Modul Model(PV ONLY)'
-            - 'Inverter Model(PV ONLY)'
-            - 'Azimuth(PV ONLY)'
-            - 'Surface Tilt(PV ONLY)'
-            - 'Albedo(PV ONLY)'
-            - 'Altitude(PV ONLY)'
-            - 'Latitude(PV ONLY)'
-            - 'Longitude(PV ONLY)'
-        
+             - 'label'
+             - 'active'
+             - 'fixed'
+             - 'output'
+             - 'input' (Only solar thermal flat plate)
+             - 'technology'
+             - 'variable costs / (CU / kWh)'
+             - 'existing capacity / (kW)'
+             - 'min.investment capacity / (kW)'
+             - 'max.investment capacity / (kW)'
+             - 'periodical costs / (CU / (kW a))'
+             - 'Non-Convex Investment'
+             - 'Fix Investment Cost / (CU/a)'
+             - 'Turbine Model (Windpower ONLY)'
+             - 'Hub Height (Windpower ONLY)'
+             - 'technology database(PV ONLY)'
+             - 'inverter database(PV ONLY)'
+             - 'Modul Model(PV ONLY)'
+             - 'Inverter Model(PV ONLY)'
+             - 'Azimuth(PV ONLY)'
+             - 'Surface Tilt(PV ONLY)'
+             - 'Albedo(PV ONLY)'
+             - 'Altitude(PV ONLY)'
+             - 'Latitude(PV ONLY)'
+             - 'Longitude(PV ONLY)'
+             - 'Latitude (Solar Heat)'
+             - 'Longitude (Solar Heat)'
+             - 'Surface Tilt (Solar Heat)'
+             - 'Azimuth (Solar Heat)'
+             - 'Cleanliness (Solar Heat)'
+             - 'ETA 0 (Solar Heat)'
+             - 'A1 (Solar Heat)'
+             - 'A2 (Solar Heat)'
+             - 'C1 (Solar Heat)'
+             - 'C2 (Solar Heat)'
+             - 'Temperature Inlet /deg C (Solar Heat)'
+             - 'Temperature Difference /deg C (Solar Heat)'
+             - 'Conversion Factor /(sqm/kW) (Solar Heat)'
+             - 'Peripheral Losses (Solar Heat)'
+             - 'Electric Consumption (Solar Heat)'
+
+        nodes: obj:'list'
+             -  list of components created before(can be empty)
+
         busd: obj:'dict'
         --  dictionary containing the buses of the energy system
-        
-        nodes: obj:'list'
-        --  list of components created before(can be empty)
-        
+
         filepath: obj:'str'
         -- path to .xlsx scenario-file containing a
         "weather data" sheet with timeseries for
@@ -428,13 +628,13 @@ class Sources:
             -   "temperature" in °C
             -   "windspeed" in m / s
             -   "z0"(roughness length) in m
-        
+
         ---
         Other variables:
-        
+
         nodes_sources: obj:'list'
         -- class intern list of sources that are already created
-        
+
         ---
         Contributors:
         - Christian Klemm - christian.klemm@fh-muenster.de
@@ -472,8 +672,13 @@ class Sources:
                 # Create Time-series Sources
                 elif so['technology'] == 'timeseries':
                     self.timeseries_source(so, filepath)
+
+                # Create flat plate solar thermal Sources
+                elif so['technology'] == 'solar_thermal_flat_plate' or \
+                        'concentrated_solar_power':
+                    self.solar_heat_source(so, data)
             
-        # appends created sources to the list of nodes
+        # appends created sources and other objects to the list of nodes
         for i in range(len(self.nodes_sources)):
             nodes.append(self.nodes_sources[i])
 
@@ -990,13 +1195,53 @@ class Transformers:
         }}
         self.create_transformer(tf, inputs, outputs, conversion_factors)
         
-    def heat_pump_transformer(self, t, data):
+    def compression_heat_transformer(self, tf, data):
         """
-        Creates a Heat Pump object by using oemof.thermal.
-        Creates a heat pump with the parameters given in
-        'nodes_data' and adds it to the list of components 'nodes'.
-        ----
-        @ Janik Budde - Janik.Budde@fh-muenster.de, 30.07.2020
+            Creates a Compression Heat Pump or Compression Chiller by using
+            oemof.thermal and adds it to the list of components 'nodes'.
+            Parameters are given in 'nodes_data' are used .
+
+
+            :param tf: has to contain the following keyword arguments
+
+                - 'label'
+                - 'active'
+                - 'transformer type': 'compression_heat_transformer'
+                - 'mode':
+                    - 'heat_pump' or
+                    - 'chiller'
+                - 'input'
+                - 'output'
+                - 'efficiency'
+                - 'variable input costs /(CU/kWh)'
+                - 'variable output costs /(CU/kWh)'
+                - 'variable input constraint costs /(CU/kWh)'
+                - 'variable output constraint costs /(CU/kWh)'
+                - 'existing capacity /(kW)'
+                - 'min. investment capacity /(kW)'
+                - 'max. investment capacity /(kW)'
+                - 'periodical costs /(CU/(kW a))'
+                - 'periodical constraint costs /(CU/(kW a))'
+                - 'Non-Convex Investment'
+                - 'Fix Investment Costs /(CU/a)'
+                - 'heat source (CHT)'
+                - 'temperature high /deg C (CHT)'
+                - 'temperature low /deg C (CHT)'
+                - 'quality grade (CHT)'
+                - 'area /(sq m) (CHT)'
+                - 'length of the geoth. probe /m (CHT)'
+                - 'heat extraction /(kW/(m*a)) (CHT)'
+                - 'min. borehole area /(sq m) (CHT)'
+                - 'temp threshold icing (CHT)'
+                - 'factor icing (CHT)'
+
+            :type tf: dict
+
+            :param data: weather data
+            :type data: dict
+
+            Janik Budde - Janik.Budde@fh-muenster.de, 30.07.2020
+            Yannick Wittor - yw090223@fh-muenster.de, 07.01.2021
         """
         
         # import oemof.thermal in order to calculate the cop
@@ -1004,64 +1249,73 @@ class Transformers:
             as cmpr_hp_chiller
         import math
 
-        # creates an oemof-bus object, all heat pumps use the same low
-        # temp bus
-        bus = solph.Bus(label=t['label'] + '_low_temp_bus')
+        # creates one oemof-bus object for compression heat transformers
+        # depending on mode of operation
+        if tf['mode'] == 'heat_pump':
+            temp = '_low_temp'
+        elif tf['mode'] == 'chiller':
+            temp = '_high_temp'
+        bus = solph.Bus(label=tf['label'] + temp + '_bus')
         
         # adds the bus object to the list of components "nodes"
         self.nodes_transformer.append(bus)
-        self.busd[t['label'] + '_low_temp_bus'] = bus
+        self.busd[tf['label'] + temp + '_bus'] = bus
         
         # returns logging info
-        logging.info('   ' + 'Bus created: ' + t['label'] + '_low_temp_bus')
+        logging.info('   ' + 'Bus created: ' + tf['label'] + temp + '_bus')
         
-        # differentiation between heat sources
+        # differentiation between heat sources under consideration of mode
+        # of operation
         # ground as a heat source referring to vertical-borehole
-        # ground-coupled heat pumps
-        if t['heat source'] == "Ground":
+        # ground-coupled compression heat transformers
+        if tf['heat source (CHT)'] == "Ground":
         
-            # borehole that acts as heat source for the heat pump
-            heatpump_label = t['label'] + '_low_temp_ground_source'
+            # borehole that acts as heat source for the transformer
+            cmpr_heat_transformer_label = tf['label'] + \
+                                          temp + '_ground_source'
             
             # the capacity of a borehole is limited by the area
             heatsource_capacity = \
-                t['area /(sq m)'] * (t['length of the geoth. probe (m)']
-                                     * t['heat extraction (kW/(m*a))']
-                                     / t['min. borehole area (sq m)'])
-            # ground water as a heat source
-        elif t['heat source'] == "GroundWater":
+                tf['area /(sq m) (CHT)'] * \
+                (tf['length of the geoth. probe /m (CHT)']
+                 * tf['heat extraction /(kW/(m*a)) (CHT)']
+                 / tf['min. borehole area /(sq m) (CHT)'])
+        # ground water as a heat source
+        elif tf['heat source (CHT)'] == "GroundWater":
         
-            # ground water that acts as heat source for the heat pump
-            heatpump_label = t['label'] + '_low_temp_groundwater_source'
+            # ground water that acts as heat source for the transformer
+            cmpr_heat_transformer_label = tf['label'] + \
+                                          temp + '_groundwater_source'
             
             # the capacity of ambient ground water is not limited
             heatsource_capacity = math.inf
         
         # ambient air as a heat source
-        elif t['heat source'] == "Air":
+        elif tf['heat source (CHT)'] == "Air":
         
-            # ambient air that acts as heat source for the heat pump
-            heatpump_label = t['label'] + '_low_temp_air_source'
+            # ambient air that acts as heat source for the transformer
+            cmpr_heat_transformer_label = tf['label'] + temp + '_air_source'
             
             # the capacity of ambient air is not limited
             heatsource_capacity = math.inf
         
         # surface water as a heat source
-        elif t['heat source'] == "Water":
+        elif tf['heat source (CHT)'] == "Water":
         
-            # ambient air that acts as heat source for the heat pump
-            heatpump_label = t['label'] + '_low_temp_water_source'
+            # ambient air that acts as heat source for the transformer
+            cmpr_heat_transformer_label = tf['label'] + temp + '_water_source'
             
             # the capacity of ambient water is not limited
             heatsource_capacity = math.inf
         else:
-            raise SystemError(t['label'] + " Error in heat source attribute")
+            raise SystemError(tf['label'] + " Error in heat source attribute")
         maximum = heatsource_capacity
-        # the heat source costs are considered by the transformer
+        # Creates heat source for transformer. The heat source costs are
+        # considered by the transformer.
         self.nodes_transformer.append(
-            solph.Source(label=heatpump_label,
+            solph.Source(label=cmpr_heat_transformer_label,
                          outputs={self.busd[
-                             t['label'] + '_low_temp_bus']: solph.Flow(
+                             tf['label'] + temp + '_bus']: solph.Flow(
                                  investment=solph.Investment(ep_costs=0,
                                                              minimum=0,
                                                              maximum=maximum,
@@ -1070,59 +1324,85 @@ class Transformers:
         
         # Returns logging info
         logging.info(
-                '   ' + 'Heat Source created: ' + t['label']
-                + '_low_temp_source')
+                '   ' + 'Heat Source created: ' + tf['label']
+                + temp + '_source')
         
-        # pre-calculation of COPs, referring to different low temp sources
-        if t['heat source'] == "Ground":
-            temp_low = data['ground_temp']
-        
-        elif t['heat source'] == "GroundWater":
-            temp_low = data['groundwater_temp']
-        
-        elif t['heat source'] == "Air":
-            temp_low = data['temperature']
-        
-        elif t['heat source'] == "Water":
-            temp_low = data['water_temp']
+        # set temp_high and temp_low and icing considering different
+        # heat sources and the mode of operation
+        if tf['heat source (CHT)'] == "Ground":
+            if tf['mode'] == 'heat_pump':
+                temp_low = data['ground_temp']
+            elif tf['mode'] == 'chiller':
+                temp_high = data['ground_temp']
+        elif tf['heat source (CHT)'] == "GroundWater":
+            if tf['mode'] == 'heat_pump':
+                temp_low = data['groundwater_temp']
+            elif tf['mode'] == 'chiller':
+                temp_high = data['groundwater_temp']
+        elif tf['heat source (CHT)'] == "Air":
+            if tf['mode'] == 'heat_pump':
+                temp_low = data['temperature']
+            elif tf['mode'] == 'chiller':
+                temp_high = data['temperature'].copy()
+                temp_low_value = tf['temperature low /deg C (CHT)']
+                # low temperature as formula to avoid division by zero error
+                for index, value in enumerate(temp_high):
+                    if value == temp_low_value:
+                        temp_high[index] = temp_low_value + 0.1
+        elif tf['heat source (CHT)'] == "Water":
+            if tf['mode'] == 'heat_pump':
+                temp_low = data['water_temp']
+            elif tf['mode'] == 'chiller':
+                temp_high = data['water_temp']
         else:
             raise SystemError('problem with HeatSource')
         
+        if tf['mode'] == 'heat_pump':
+            temp_threshold_icing = tf['temp threshold icing (CHT)']
+            factor_icing = tf['factor icing (CHT)']
+            temp_high = [tf['temperature high /deg C (CHT)']]
+        elif tf['mode'] == 'chiller':
+            # variable "icing" is not important in cooling mode
+            temp_threshold_icing = None
+            factor_icing = None
+            temp_low = [tf['temperature low /deg C (CHT)']]
+        # calculation of COPs with set parameters
         cops_hp = cmpr_hp_chiller.calc_cops(
-                temp_high=[t['temperature high /(deg C)']],
+                temp_high=temp_high,
                 temp_low=temp_low,
-                quality_grade=t['quality grade'],
-                temp_threshold_icing=t['temp threshold icing'],
-                factor_icing=t['factor icing'],
-                mode='heat_pump')
-        logging.info('   ' + t['label']
+                quality_grade=tf['quality grade (CHT)'],
+                temp_threshold_icing=temp_threshold_icing,
+                factor_icing=factor_icing,
+                mode=tf['mode'])
+        logging.info('   ' + tf['label']
                      + ", Average Coefficient of Performance (COP): {:2.2f}"
                      .format(numpy.mean(cops_hp)))
-        
+
         # Creates transformer object and adds it to the list of components
-        inputs = {"inputs": {self.busd[t['input']]: solph.Flow(
-                variable_costs=t['variable input costs /(CU/kWh)'],
+        inputs = {"inputs": {self.busd[tf['input']]: solph.Flow(
+                variable_costs=tf['variable input costs /(CU/kWh)'],
                 emission_factor=
-                t['variable input constraint costs /(CU/kWh)']),
-                self.busd[t['label'] + '_low_temp_bus']: solph.Flow(
+                tf['variable input constraint costs /(CU/kWh)']),
+                self.busd[tf['label'] + temp + '_bus']: solph.Flow(
                 variable_costs=0)}}
-        outputs = {"outputs": {self.busd[t['output']]: solph.Flow(
-                variable_costs=t['variable output costs /(CU/kWh)'],
-                emission_factor=t[
+        outputs = {"outputs": {self.busd[tf['output']]: solph.Flow(
+                variable_costs=tf['variable output costs /(CU/kWh)'],
+                emission_factor=tf[
                     'variable output constraint costs /(CU/kWh)'],
                 investment=solph.Investment(
-                        ep_costs=t['periodical costs /(CU/(kW a))'],
-                        minimum=t['min. investment capacity /(kW)'],
-                        maximum=t['max. investment capacity /(kW)'],
-                        periodical_constraint_costs=t[
+                        ep_costs=tf['periodical costs /(CU/(kW a))'],
+                        minimum=tf['min. investment capacity /(kW)'],
+                        maximum=tf['max. investment capacity /(kW)'],
+                        periodical_constraint_costs=tf[
                             'periodical constraint costs /(CU/(kW a))'],
-                        existing=t['existing capacity /(kW)']))}}
+                        existing=tf['existing capacity /(kW)']))}}
         conversion_factors = {
             "conversion_factors": {
-                self.busd[t['label'] + '_low_temp_bus']:
-                    [(cop - 1) / cop for cop in cops_hp],
-                self.busd[t['input']]: [1 / cop for cop in cops_hp]}}
-        self.create_transformer(t, inputs, outputs, conversion_factors)
+                self.busd[tf['label'] + temp + '_bus']:
+                    [((cop - 1) / cop)/tf['efficiency']
+                     for cop in cops_hp],
+                self.busd[tf['input']]: [1 / cop for cop in cops_hp]}}
+        self.create_transformer(tf, inputs, outputs, conversion_factors)
     
     def genericchp_transformer(self, tf, nd):
         """
@@ -1217,7 +1497,7 @@ class Transformers:
                     variable_costs=tf[
                         'variable output costs 2 /(CU/kWh)'],
                     emission_factor=tf[
-                        'variable output constraint costs 2 /(CU/kWh)']
+                        'variable output constraint costs 2/(CU/kWh)']
                 )},
                 Beta=[tf['power loss index [GenericCHP]']
                       for p in range(0, periods)],
@@ -1227,7 +1507,158 @@ class Transformers:
 
         # returns logging info
         logging.info('   ' + 'Transformer created: ' + tf['label'])
-    
+
+    def absorption_heat_transformer(self, tf, data):
+        """
+            Creates an absorption heat transformer object with the parameters
+            given in 'nodes_data' and adds it to the list of components 'nodes'
+
+
+            :param tf: has to contain the following keyword arguments
+
+                - 'label'
+                - 'active'
+                - 'transformer type': 'absorption_heat_transformer'
+                - 'mode': 'chiller'
+                - 'input'
+                - 'output'
+                - 'efficiency'
+                - 'variable input costs /(CU/kWh)'
+                - 'variable output costs /(CU/kWh)'
+                - 'variable input constraint costs /(CU/kWh)'
+                - 'variable constraint costs /(CU/kWh)'
+                - 'existing capacity /(kW)'
+                - 'min. investment capacity /(kW)'
+                - 'max. investment capacity /(kW)'
+                - 'periodical costs /(CU/(kW a))'
+                - 'periodical constraint costs /(CU/(kW a))'
+                - 'Non-Convex Investment'
+                - 'Fix Investment Costs /(CU/a)'
+                - 'name (AbsCH)'
+                    - name refers to models of absorption heat transformers
+                      with different equation parameters. See documentation
+                      for possible inputs.
+                - 'high temperature /deg C (AbsCH)'
+                - 'chilling temperature /deg C (AbsCH)'
+                - 'electrical input conversion factor (AbsCH)'
+                - 'recooling temperature difference /deg C (AbsCH)'
+
+            :type tf: dict
+
+            :param data: weather data
+            :type data: dict
+
+            Yannick Wittor - yw090223@fh-muenster.de, 07.01.2021
+        """
+        # import oemof.thermal in order to calculate COP
+        import oemof.thermal.absorption_heatpumps_and_chillers \
+            as abs_hp_chiller
+        from math import inf
+        import numpy as np
+
+        # Import characteristic equation parameters
+        char_para = pd.read_csv(os.path.join(
+            os.path.dirname(__file__)) +
+                            '/technical_data/characteristic_parameters.csv')
+
+        # creates one oemof-bus object for compression heat transformers
+        # depending on mode of operation
+        if tf['mode'] == 'heat_pump':
+            temp = '_low_temp'
+        elif tf['mode'] == 'chiller':
+            temp = '_high_temp'
+
+        bus_label = tf['label'] + temp + '_bus'
+        source_label = tf['label'] + temp + '_source'
+        bus = solph.Bus(label=bus_label)
+
+        # adds the bus object to the list of components "nodes"
+        self.nodes_transformer.append(bus)
+        self.busd[bus_label] = bus
+
+        # returns logging info
+        logging.info('   ' + 'Bus created: ' + bus_label)
+
+        # creates a source object as high temperature heat source
+        self.nodes_transformer.append(
+            solph.Source(label=source_label,
+                         outputs={self.busd[
+                             bus_label]:
+                                solph.Flow(variable_costs=
+                                           tf['variable input costs /(CU/kWh)']
+                                           )}))
+
+        # Returns logging info
+        logging.info(
+            '   ' + 'Heat Source created:' + source_label)
+
+        # Calculates cooling temperature in absorber/evaporator depending on
+        # ambient temperature of recooling system
+        data_np = np.array(data['temperature'])
+        t_cool = data_np + \
+            tf['recooling temperature difference /deg C (AbsCH)']
+        t_cool = list(map(int, t_cool))
+
+        # Calculation of characteristic temperature difference
+        chiller_name = tf['name (AbsCH)']
+        ddt = abs_hp_chiller.calc_characteristic_temp(
+            t_hot=[tf['high temperature /deg C (AbsCH)']],
+            t_cool=t_cool,
+            t_chill=[tf['chilling temperature /deg C (AbsCH)']],
+            coef_a=char_para[(char_para['name'] ==
+                              chiller_name)]['a'].values[0],
+            coef_e=char_para[(char_para['name'] ==
+                              chiller_name)]['e'].values[0],
+            method='kuehn_and_ziegler')
+        # Calculation of cooling capacity
+        q_dots_evap = abs_hp_chiller.calc_heat_flux(
+            ddts=ddt,
+            coef_s=char_para[(char_para['name'] ==
+                              chiller_name)]['s_E'].values[0],
+            coef_r=char_para[(char_para['name'] ==
+                              chiller_name)]['r_E'].values[0],
+            method='kuehn_and_ziegler')
+        # Calculation of driving heat
+        q_dots_gen = abs_hp_chiller.calc_heat_flux(
+            ddts=ddt,
+            coef_s=char_para[(char_para['name'] ==
+                              chiller_name)]['s_G'].values[0],
+            coef_r=char_para[(char_para['name'] ==
+                              chiller_name)]['r_G'].values[0],
+            method='kuehn_and_ziegler')
+        # Calculation of COPs
+        cops_abs = \
+            [Qevap / Qgen for Qgen, Qevap in zip(q_dots_gen, q_dots_evap)]
+
+        logging.info('   ' + tf['label']
+                     + ", Average Coefficient of Performance (COP): {:2.2f}"
+                     .format(numpy.mean(cops_abs)))
+
+        # Set in- and outputs with conversion factors and creates transformer
+        # object and adds it to  the list of components
+        inputs = {"inputs": {self.busd[tf['input']]: solph.Flow(
+                 variable_costs=tf['variable input costs /(CU/kWh)'],
+                 emission_factor=
+                 tf['variable input constraint costs /(CU/kWh)']),
+                 self.busd[tf['label'] + temp + '_bus']: solph.Flow(
+                 variable_costs=0)}}
+        outputs = {"outputs": {self.busd[tf['output']]: solph.Flow(
+                variable_costs=tf['variable output costs /(CU/kWh)'],
+                emission_factor=tf['variable output constraint costs /(CU/kWh)'],
+                investment=solph.Investment(
+                        ep_costs=tf['periodical costs /(CU/(kW a))'],
+                        minimum=tf['min. investment capacity /(kW)'],
+                        maximum=tf['max. investment capacity /(kW)'],
+                        existing=tf['existing capacity /(kW)']))}}
+        conversion_factors = {
+            "conversion_factors": {
+                self.busd[tf['output']]:
+                    [cop for cop in cops_abs],
+                self.busd[tf['input']]:
+                    tf['electrical input conversion factor (AbsCH)']
+                }}
+        self.create_transformer(tf, inputs, outputs, conversion_factors)
+
     def __init__(self, nodes_data, nodes, busd):
     
         # renames variables
@@ -1246,9 +1677,9 @@ class Transformers:
                 if t['transformer type'] == 'GenericTransformer':
                     self.generic_transformer(t)
                 
-                # Create Heat Pump
-                elif t['transformer type'] == 'HeatPump':
-                    self.heat_pump_transformer(t, data)
+                # Create Compression Heat Transformer
+                elif t['transformer type'] == 'compression_heat_transformer':
+                    self.compression_heat_transformer(t, data)
                 
                 # Create Extraction Turbine CHPs
                 elif t['transformer type'] == 'ExtractionTurbineCHP':
@@ -1266,7 +1697,11 @@ class Transformers:
                         '   ' + 'WARNING: OffsetTransformer are currently'
                         + ' not a part of this model generator, but will'
                         + ' be added later.')
-                
+
+                # Create Absorption Chiller
+                elif t['transformer type'] == 'absorption_heat_transformer':
+                    self.absorption_heat_transformer(t, data)
+
                 # Error Message for invalid Transformers
                 else:
                     logging.info('   ' + 'WARNING: \''
@@ -1285,95 +1720,258 @@ class Storages:
     Creates oemof storage objects as defined in 'nodes_data' and adds them to
     the list of components 'nodes'.
     """
-    
+    def generic_storage(self, s):
+        """
+            Creates a generic storage object with the parameters
+            given in 'nodes_data' and adds it to the list of components 'nodes
+
+
+            :param s: has to contain the following keyword arguments
+
+                - 'label'
+                - 'active'
+                - 'storage type': 'Generic'
+                - 'bus'
+                - 'existing capacity /(kWh)'
+                - 'min. investment capacity /(kWh)'
+                - 'max. investment capacity /(kWh)'
+                - 'periodical costs /(CU/(kWh a))'
+                - 'periodical constraint costs /(CU/(kWh a))'
+                - 'Non-Convex Investments'
+                - 'Fix Investment Costs /(CU/a)'
+                - 'input/capacity ratio (invest)'
+                - 'output/capacity ratio (invest)'
+                - 'capacity loss (Generic only)'
+                - 'efficiency inflow'
+                - 'efficiency outflow'
+                - 'initial capacity'
+                - 'capacity min'
+                - 'capacity max'
+                - 'variable input costs'
+                - 'variable output costs'
+                - 'variable input constraint costs /(CU/kWh)'
+                - 'variable output constraint costs /(CU/kWh)'
+
+            :type s: dict
+
+            Christian Klemm - christian.klemm@fh-muenster.de, 05.03.2020
+        """
+
+        # creates storage object and adds it to the
+        # list of components
+        self.nodes.append(
+            solph.components.GenericStorage(
+                label=s['label'],
+                inputs={self.busd[s['bus']]: solph.Flow(
+                    variable_costs=s[
+                        'variable input costs'],
+                    emission_factor=s[
+                        'variable input constraint costs /'
+                        '(CU/kWh)']
+                )},
+                outputs={self.busd[s['bus']]: solph.Flow(
+                    variable_costs=s[
+                        'variable output costs'],
+                    emission_factor=s[
+                        'variable output constraint costs /'
+                        '(CU/kWh)']
+                )},
+                loss_rate=s['capacity loss (Generic only)'],
+                inflow_conversion_factor=s[
+                    'efficiency inflow'],
+                outflow_conversion_factor=s[
+                    'efficiency outflow'],
+                invest_relation_input_capacity=s[
+                    'input/capacity ratio (invest)'],
+                invest_relation_output_capacity=s[
+                    'output/capacity ratio (invest)'],
+                investment=solph.Investment(
+                    ep_costs=s[
+                        'periodical costs /(CU/(kWh a))'],
+                    periodical_constraint_costs=s[
+                        'periodical constraint costs /(CU/(kWh a))'],
+                    existing=s[
+                        'existing capacity /(kWh)'],
+                    minimum=s[
+                        'min. investment capacity /(kWh)'],
+                    maximum=s[
+                        'max. investment capacity /(kWh)'],
+                    nonconvex=True if
+                    s['Non-Convex Investment'] == 1 else False,
+                    offset=s['Fix Investment Costs /(CU/a)'])))
+
+        # returns logging info
+        logging.info('   ' + 'Storage created: ' + s['label'])
+
+    def stratified_thermal_storage(self, s, data):
+        """
+            Creates a stratified thermal storage object with the parameters
+            given in 'nodes_data' and adds it to the list of components 'nodes'
+
+
+            :param s: has to contain the following keyword arguments:
+
+                - 'label'
+                - 'active'
+                - 'storage type': 'Stratified'
+                - 'bus'
+                - 'existing capacity /(kWh)'
+                - 'min. investment capacity /(kWh)'
+                - 'max. investment capacity /(kWh)'
+                - 'periodical costs /(CU/(kWh a))'
+                - 'periodical constraint costs /(CU/(kWh a))'
+                - 'Non-Convex Investments'
+                - 'Fix Investment Costs /(CU/a)'
+                - 'input/capacity ratio (invest)'
+                - 'output/capacity ratio (invest)'
+                - 'efficiency inflow'
+                - 'efficiency outflow'
+                - 'initial capacity'
+                - 'capacity min'
+                - 'capacity max'
+                - 'variable input costs'
+                - 'variable output costs'
+                - 'variable input constraint costs /(CU/kWh)'
+                - 'variable output constraint costs /(CU/kWh)'
+                - 'diameter /(m) (Stratified Storage)'
+                - 'temperature high /(deg C) (Stratified Storage)'
+                - 'temperature low /(deg C) (Stratified Storage)'
+                - 'U value /(W/(sqm*K)) (Stratified Storage)'
+
+            :type s: dict
+
+            Yannick Wittor - yw090223@fh-muenster.de, 26.01.2021
+        """
+        # import functions for stratified thermal storages from oemof thermal
+        from oemof.thermal.stratified_thermal_storage import calculate_losses
+
+        # calculations for stratified thermal storage
+        loss_rate, fixed_losses_relative, fixed_losses_absolute = \
+            calculate_losses(
+                s['U value /(W/(sqm*K)) (Stratified Storage)'],
+                s['diameter /m (Stratified Storage)'],
+                s['temperature high /deg C (Stratified Storage)'],
+                s['temperature low /deg C (Stratified Storage)'],
+                data['temperature'])
+
+        # creates storage object and adds it to the
+        # list of components
+        self.nodes.append(
+            solph.components.GenericStorage(
+                label=s['label'],
+                inputs={self.busd[s['bus']]: solph.Flow(
+                    variable_costs=s[
+                        'variable input costs'],
+                    emission_factor=s[
+                        'variable input constraint costs /'
+                        '(CU/kWh)']
+                )},
+                outputs={self.busd[s['bus']]: solph.Flow(
+                    variable_costs=s[
+                        'variable output costs'],
+                    emission_factor=s[
+                        'variable output constraint costs /'
+                        '(CU/kWh)']
+                )},
+                min_storage_level=s['capacity min'],
+                max_storage_level=s['capacity max'],
+                loss_rate=loss_rate,
+                fixed_losses_relative=fixed_losses_relative,
+                fixed_losses_absolute=fixed_losses_absolute,
+                inflow_conversion_factor=s[
+                    'efficiency inflow'],
+                outflow_conversion_factor=s[
+                    'efficiency outflow'],
+                invest_relation_input_capacity=s[
+                    'input/capacity ratio (invest)'],
+                invest_relation_output_capacity=s[
+                    'output/capacity ratio (invest)'],
+                investment=solph.Investment(
+                    ep_costs=s[
+                        'periodical costs /(CU/(kWh a))'],
+                    periodical_constraint_costs=s[
+                        'periodical constraint costs /(CU/(kWh a))'],
+                    existing=s[
+                        'existing capacity /(kWh)'],
+                    minimum=s[
+                        'min. investment capacity /(kWh)'],
+                    maximum=s[
+                        'max. investment capacity /(kWh)'],
+                    nonconvex=True if
+                    s['Non-Convex Investment'] == 1 else False,
+                    offset=s['Fix Investment Costs /(CU/a)'])))
+        # returns logging info
+        logging.info('   ' + 'Storage created: ' + s['label'])
+
     def __init__(self, nodes_data, nodes, busd):
         """
-        Inits the storage class.
-        ----
-        
-        Keyword arguments:
-        
-        nodes_data : obj:'dict'
-            --  dictionary containing parameters of storages to be
-            created.The following data have to be provided:
-                    - 'label'
-                    - 'active'
-                    - 'bus'
-                    - 'existing capacity / (kWh)'
-                    - 'min.investment capacity / (kWh)'
-                    - 'max.investment capacity / (kWh)'
-                    - 'Non-Convex Investments'
-                    - 'Fix Investment Costs /(CU/a)'
-                    - 'input/capacity ratio (invest)'
-                    - 'output/capacity ratio (invest)'
-                    - 'capacity loss'
-                    - 'efficiency inflow'
-                    - 'efficiency outflow'
-                    - 'initial capacity'
-                    - 'capacity min'
-                    - 'capacity max'
-                    - 'variable input costs'
-                    - 'variable output costs'
-        
-        busd : obj:'dict'
-            -- dictionary containing the busses of the energy system
-    
-        nodes : obj:'list'
-            -- list of components created before (can be empty)
-        
-        ----
-        @ Christian Klemm - christian.klemm@fh-muenster.de, 05.03.2020
+            Inits the storage class.
+
+
+            :param nodes_data: The following data have to be provided:
+
+                - 'label'
+                - 'active'
+                - 'storage type':
+                    - 'Generic' or
+                    - 'Stratified'
+                - 'bus'
+                - 'existing capacity /(kWh)'
+                - 'min. investment capacity /(kWh)'
+                - 'max. investment capacity /(kWh)'
+                - 'periodical costs /(CU/(kWh a))'
+                - 'periodical constraint costs /(CU/(kWh a))'
+                - 'Non-Convex Investments'
+                - 'Fix Investment Costs /(CU/a)'
+                - 'input/capacity ratio (invest)'
+                - 'output/capacity ratio (invest)'
+                - 'capacity loss (Generic only)'
+                - 'efficiency inflow'
+                - 'efficiency outflow'
+                - 'initial capacity'
+                - 'capacity min'
+                - 'capacity max'
+                - 'variable input costs'
+                - 'variable output costs'
+                - 'diameter /(m) (Stratified Storage)'
+                - 'temperature high /(deg C) (Stratified Storage)'
+                - 'temperature low /(deg C) (Stratified Storage)'
+                - 'U value /(W/(sqm*K)) (Stratified Storage)'
+
+            :type nodes_data: dict
+
+            :param busd: dictionary containing the busses of the energy system
+            :type busd: dict
+
+            :param nodes: list of components created before (can be empty)
+            :type nodes: list
+
+            Christian Klemm - christian.klemm@fh-muenster.de, 05.03.2020
         """
-    
+        # renames variables
+        self.busd = busd
+        self.nodes = []
+
+        # Import weather Data
+        data = pd.read_csv(os.path.join(
+            os.path.dirname(__file__)) + '/interim_data/weather_data.csv')
+
         # creates storage object for every storage element in nodes_data
         for i, s in nodes_data['storages'].iterrows():
             if s['active']:
-                # creates storage object and adds it to the
-                # list of components
-                nodes.append(
-                        solph.components.GenericStorage(
-                                label=s['label'],
-                                inputs={busd[s['bus']]: solph.Flow(
-                                        variable_costs=s[
-                                            'variable input costs'],
-                                        emission_factor=s[
-                                            'variable input constraint costs /'
-                                            '(CU/kWh)']
-                                )},
-                                outputs={busd[s['bus']]: solph.Flow(
-                                        variable_costs=s[
-                                            'variable output costs'],
-                                        emission_factor=s[
-                                            'variable output constraint costs /'
-                                            '(CU/kWh)']
-                                )},
-                                loss_rate=s['capacity loss'],
-                                inflow_conversion_factor=s[
-                                    'efficiency inflow'],
-                                outflow_conversion_factor=s[
-                                    'efficiency outflow'],
-                                invest_relation_input_capacity=s[
-                                    'input/capacity ratio (invest)'],
-                                invest_relation_output_capacity=s[
-                                    'output/capacity ratio (invest)'],
-                                investment=solph.Investment(
-                                    ep_costs=s[
-                                        'periodical costs /(CU/(kWh a))'],
-                                    periodical_constraint_costs=s[
-                                        'periodical constraint costs /(CU/(kWh a))'],
-                                    existing=s[
-                                        'existing capacity /(kWh)'],
-                                    minimum=s[
-                                        'min. investment capacity /(kWh)'],
-                                    maximum=s[
-                                        'max. investment capacity /(kWh)'],
-                                    nonconvex=True if
-                                    s['Non-Convex Investment'] == 1 else False,
-                                    offset=s['Fix Investment Costs /(CU/a)'])))
-        
-                # returns logging info
-                logging.info('   ' + 'Storage created: ' + s['label'])
-    
+
+                # Create Generic Storage
+                if s['storage type'] == 'Generic':
+                    self.generic_storage(s)
+
+                # Create Generic Storage
+                if s['storage type'] == 'Stratified':
+                    self.stratified_thermal_storage(s, data)
+
+        # appends created storages to the list of nodes
+        for i in range(len(self.nodes)):
+            nodes.append(self.nodes[i])
+
 
 class Links:
     """

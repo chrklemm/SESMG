@@ -229,7 +229,7 @@ def get_pid():
 def show_results():
     """ executes the external program, which executes a plotl.dash app for displaying interactive results."""
     if save_path.get() == '':
-        raise SystemError('No optimization since the last restart,'
+        raise SystemError('No optimization since the last restart'
                           ' please select a result folder!')
 
     # Determines the ID of a still running process on port 8050.
@@ -251,6 +251,7 @@ def show_results():
             subprocess.call("open http://127.0.0.1:8050", shell=True)
         elif sys.platform.startswith("linux"):
             subprocess.call("xdg-open http://127.0.0.1:8050", shell=True)
+
     # Starts the new Plotly Dash Server for Windows
     if sys.platform.startswith("win"):
         IR_PATH = os.path.join(os.path.dirname(__file__) + '/program_files')
@@ -276,7 +277,7 @@ window.geometry('1200x900')
 tab_control = ttk.Notebook(window)
 tab_control.pack(expand=1, fill='both')
 tab_control.pressed_index = None
-scenario_path = StringVar(window, str(os.path.join(os.path.dirname(__file__), 'scenario_v0.1.1.xlsx')))
+scenario_path = StringVar(window, str(os.path.join(os.path.dirname(__file__), 'scenario_v0.2.0.xlsx')))
 save_path_directory = \
         StringVar(window, str(os.path.join(os.path.dirname(__file__), 'results')))
 save_path = StringVar(window, '')
